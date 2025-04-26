@@ -38,12 +38,15 @@ jobs:
           PORT: 10000
         run: |
           ./cloudflared tunnel --url http://127.0.0.1:$PORT --metrics localhost:45678 &
-          
+
       - name: Start Second Agro Tunnel
         env:
           PORT: 10000
         run: |
           ./cloudflared tunnel --url http://127.0.0.1:$PORT --metrics localhost:45679 &
 
-      - name: Keep Workflow Alive for 5 Hours
+      - name: Keep Workflow Alive for First 5 Hours
+        run: sleep $((5 * 60 * 60))
+
+      - name: Keep Workflow Alive for Second 5 Hours
         run: sleep $((5 * 60 * 60))
