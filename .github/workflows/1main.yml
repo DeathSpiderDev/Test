@@ -1,0 +1,79 @@
+name: Windows RDP Maker
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "RDP duration in hours (max 6)"
+        required: true
+        default: "4"
+      password:
+        description: "RDP password (min 8 chars)"
+        required: true
+        default: "Password123"
+
+jobs:
+  create-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360  # 6 hours max
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up RDP
+      run: |
+        # Enable RDP
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        
+        # Set password (from workflow input)
+        $securePassword = ConvertTo-SecureString "${{ github.event.inputs.password }}" -AsPlainText -Force
+        $userAccount = Get-LocalUser -Name "runneradmin"
+        $userAccount | Set-LocalUser -Password $securePassword
+        
+        # Install TightVNC
+        Invoke-WebRequest -Uri "https://www.tightvnc.com/download/2.8.8/tightvnc-2.8.8-gpl-setup-64bit.msi" -OutFile "tightvnc.msi"
+        Start-Process msiexec.exe -ArgumentList "/i tightvnc.msi /quiet /norestart ADDLOCAL=Server SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=${{ github.event.inputs.password }} SET_USECONTROLAUTHENTICATION=1 VALUE_OF_USECONTROLAUTHENTICATION=1 SET_CONTROLPASSWORD=1 VALUE_OF_CONTROLPASSWORD=${{ github.event.inputs.password }}" -Wait
+        
+        # Start VNC server
+        Start-Process "C:\Program Files\TightVNC\tvnserver.exe" -ArgumentList "-start"
+        
+        # Install Cloudflared
+        Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
+        Move-Item -Path "cloudflared.exe" -Destination "C:\Windows\System32\cloudflared.exe"
+        
+        # Create Cloudflare tunnel config
+        $config = @"
+tunnel: github-rdp
+credentials-file: C:\Users\runneradmin\.cloudflared\credentials.json
+ingress:
+  - hostname: rdp-${{ github.run_id }}.example.com
+    service: rdp://localhost:3389
+  - hostname: vnc-${{ github.run_id }}.example.com
+    service: localhost:5900
+  - service: http_status:404
+"@
+        $config | Out-File -FilePath "C:\Users\runneradmin\.cloudflared\config.yml" -Encoding ASCII
+        
+        # Run Cloudflare tunnel in background
+        Start-Process "cloudflared" -ArgumentList "tunnel --config C:\Users\runneradmin\.cloudflared\config.yml run"
+        
+        # Get RDP info
+        $ipInfo = Invoke-RestMethod -Uri "https://api.ipify.org?format=json"
+        Write-Output "RDP IP: $($ipInfo.ip)"
+        Write-Output "RDP Username: runneradmin"
+        Write-Output "RDP Password: ${{ github.event.inputs.password }}"
+        Write-Output "VNC Password: ${{ github.event.inputs.password }}"
+        Write-Output "Cloudflare RDP URL: rdp-${{ github.run_id }}.example.com"
+        Write-Output "Cloudflare VNC URL: vnc-${{ github.run_id }}.example.com"
+        
+        # Wait for specified duration
+        Start-Sleep -Seconds (${{ github.event.inputs.duration }} * 3600)
+        
+        # Self-destruct
+        Stop-Process -Name "tvnserver" -Force
+        Stop-Process -Name "cloudflared" -Force
+        Remove-Item "C:\Windows\System32\cloudflared.exe" -Force
+        Remove-Item "C:\Program Files\TightVNC" -Recurse -Force
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 1
