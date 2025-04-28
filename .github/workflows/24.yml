@@ -1,0 +1,50 @@
+name: 24/7 VSCode with Cloudflare Tunnel
+
+on:
+  schedule:
+    # Runs every 5 minutes (GitHub's minimum interval)
+    - cron: '*/5 * * * *'
+  workflow_dispatch:  # Allow manual triggers
+  push:  # Optional: Also run on push
+
+jobs:
+  run-vscode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # Max allowed: 6 hours (GitHub limit)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.x"
+
+      - name: Install Cloudflared & Code-Server
+        run: |
+          if [ ! -f cloudflared ]; then
+            wget -q -nc https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
+            chmod +x cloudflared
+          fi
+          curl -fsSL https://code-server.dev/install.sh | sh
+
+      - name: Start VSCode in Background
+        env:
+          PORT: 10000
+        run: |
+          nohup code-server --port $PORT --disable-telemetry --auth none > /dev/null 2>&1 &
+
+      - name: Start Cloudflare Tunnel (Primary)
+        env:
+          PORT: 10000
+        run: |
+          nohup ./cloudflared tunnel --url http://127..0.1:$PORT --metrics localhost:45678 > /dev/null 2>&1 &
+
+      - name: Keep Alive (Prevent Job Exit)
+        run: |
+          # GitHub Actions kills the job after 6h, so we need to keep it alive
+          while true; do
+            sleep 300  # Sleep for 5 minutes
+            echo "Still running..."
+          done
